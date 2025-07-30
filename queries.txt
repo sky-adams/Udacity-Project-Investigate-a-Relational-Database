@@ -1,0 +1,106 @@
+/*Query 1 - query used for first insight*/
+  WITH stock AS 
+	   (SELECT f.film_id, COUNT(i.film_id) AS num_owned
+	      FROM film AS f
+	      JOIN inventory AS i
+	        ON f.film_id = i.film_id AND i.store_id = 1
+	     GROUP BY f.film_id),
+	
+	   dates_movies_out AS 
+		 (WITH first_last_days AS 
+		       --min day is 2005-05-24
+			   --last rental day is 2006-02-14
+			   --last return day is 2005-09-02
+			   (SELECT MIN(DATE_TRUNC('day', r.rental_date)) AS first_rental_day, 
+		               MAX(DATE_TRUNC('day', r.rental_date)) AS last_rental_day, 
+	                   MAX(DATE_TRUNC('day', r.return_date)) AS last_return_day
+			      FROM rental r)
+		 SELECT GENERATE_SERIES (
+			      (SELECT first_rental_day
+			         FROM first_last_days), 
+			      (SELECT last_rental_day
+			         FROM first_last_days),
+			       '1 day') AS date),
+
+       availability AS
+	     (SELECT d.date AS date, f.film_id, f.title, s.num_owned - COUNT(f.film_id) AS num_available
+			FROM rental AS r
+		    JOIN inventory AS i
+	          ON r.inventory_id = i.inventory_id
+	        JOIN film AS f
+	          ON f.film_id = i.film_id
+	        JOIN dates_movies_out AS d 
+			  ON d.date >= DATE_TRUNC('day', r.rental_date) AND d.date <= DATE_TRUNC('day', r.return_date)
+			JOIN stock AS s
+			  ON s.film_id = f.film_id
+	       GROUP BY date, f.film_id, num_owned)
+
+SELECT film_id, title, COUNT(num_available <= 0) AS days_unavailable
+  FROM availability
+ GROUP BY film_id, title
+ ORDER BY 3 DESC
+ LIMIT 10;
+
+/*Query 2 - query used for second insight*/
+SELECT CONCAT(a.first_name, ' ', a.last_name) AS actor_name, COUNT(r.rental_id) AS num_rentals
+  FROM actor AS a
+  JOIN film_actor AS fa
+    ON fa.actor_id = a.actor_id
+  JOIN film AS f
+    ON f.film_id = fa.film_id
+  JOIN inventory AS i
+    ON i.film_id = f.film_id
+  JOIN rental AS r
+    ON r.inventory_id = i.inventory_id
+ GROUP BY a.actor_id
+ ORDER BY num_rentals DESC
+ LIMIT 10;
+
+
+/*Query 3 - query used for third insight*/
+  WITH percent_from_country AS (
+	     SELECT c1.country_id, 
+		        c1.country, 
+		        100 * CAST(COUNT(*) AS float)/ (SELECT COUNT(*) AS customer_count FROM customer) AS customer_percent
+		   FROM country c1
+		   JOIN city AS c2
+		     ON c1.country_id = c2.country_id
+		   JOIN address AS a
+		     ON a.city_id = c2.city_id
+		   JOIN customer AS c3
+		     ON c3.address_id = a.address_id
+		  GROUP BY c1.country_id
+		  ORDER BY 3 DESC),
+
+	   top_five AS (
+	     SELECT *
+		   FROM percent_from_country
+		  LIMIT 5),
+
+	   other AS (
+	     SELECT 0, 'Other' AS category, SUM(customer_percent) AS customer_percent
+		   FROM percent_from_country
+		  WHERE country_id NOT IN (SELECT country_id FROM top_five))
+
+SELECT country, customer_percent
+  FROM top_five
+
+ UNION ALL
+
+SELECT category, customer_percent
+  FROM other;
+
+/*Query 4 - query used for fourth insight*/
+SELECT title, percentile
+  FROM
+       (SELECT f.film_id, 
+	           f.title, 
+               COUNT(r.rental_id) AS times_rented, 
+		       NTILE(100) OVER (ORDER BY COUNT(r.rental_id) DESC) AS percentile
+	      FROM film AS f
+	      JOIN inventory AS i
+	        ON i.film_id = f.film_id
+	      JOIN rental AS r
+	        ON r.inventory_id = i.inventory_id
+	     GROUP BY f.film_id)
+ WHERE percentile = 1;
